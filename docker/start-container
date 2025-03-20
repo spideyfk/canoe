@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+
+# Create the .composer directory in the laravel user's home directory
+COMPOSER_DIR="/home/laravel/.composer"
+if [ ! -d "$COMPOSER_DIR" ]; then
+    echo "Creating $COMPOSER_DIR directory..."
+    mkdir -p "$COMPOSER_DIR"
+fi
+
+# Ensure the .composer directory is writable by the user
+chmod -R ugo+rw "$COMPOSER_DIR"
+
+# Change ownership of the Apache log directory to the laravel user
+chown -R laravel:1000 /var/log/apache2
+
+# If additional arguments are passed, run them as the user created in the Dockerfile
+if [ $# -gt 0 ]; then
+    echo "Executing command as user laravel: $@"
+    exec gosu laravel "$@" || { echo "Failed to execute command"; exit 1; }
+else
+    echo "Starting Apache in the foreground..."
+    exec apachectl -D FOREGROUND  # Start Apache in the foreground
+fi
+

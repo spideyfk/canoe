@@ -1,0 +1,103 @@
+#!/bin/bash
+
+WHITE='\033[1;37m'
+NC='\033[0m'
+# Load environment variables from .env file
+if [ -f .env ]; then
+  export $(cat .env | grep -v '^#' | xargs)
+fi
+if [ $# -gt 0 ]; then
+    case "$1" in
+      up)
+        docker-compose up -d --build
+        # Need the containers to be healthy before moving forward with the script
+        echo -e "${WHITE}Waiting for containers to be healthy...${NC}"
+        until [ "$(docker inspect -f {{.State.Health.Status}} ${DB_CONTAINER_NAME})" == "healthy" ] && \
+              [ "$(docker inspect -f {{.State.Health.Status}} ${APP_SERVICE})" == "healthy" ]; do
+          sleep 5
+          echo -e "${WHITE}Checking health status...${NC}"
+        done
+
+        # Composer Install
+        echo -e "${WHITE}Composer install...${NC}"
+        docker-compose exec ${APP_SERVICE} composer install
+
+        echo -e "${WHITE}Creating DB if not exist...${NC}"
+        docker-compose exec ${DB_CONTAINER_NAME} bash -c "mysql -u${DB_USERNAME} -p${DB_PASSWORD} -e 'CREATE DATABASE IF NOT EXISTS ${DB_DATABASE};'"
+
+        # Check DB connection before running migrations/seeds
+        echo -e "${WHITE}Checking database connection...${NC}"
+        docker-compose exec ${DB_CONTAINER_NAME} bash -c "mysql -u${DB_USERNAME} -p${DB_PASSWORD} -e 'SELECT 1;'"
+
+        # Adding a delay before running migrations
+        echo -e "${WHITE}Waiting for a moment before running migrations...${NC}"
+        sleep 5  # Adjust time as necessary
+
+        # Check if service is running
+        echo -e "${WHITE}Checking ${APP_SERVICE} service status...${NC}"
+        if [ "$(docker inspect -f {{.State.Status}} ${APP_SERVICE})" != "running" ]; then
+          echo -e "${RED}${APP_SERVICE} service is not running. Exiting...${NC}"
+          exit 1
+        fi
+
+        # Run migrations and seeds
+        echo -e "${WHITE}Running migrations and seeding...${NC}"
+        docker-compose exec laravel bash -c "php artisan migrate:fresh --seed" || {
+          echo -e "${RED}Migration failed!${NC}"
+          exit 1
+        }
+        ;;
+      down)
+        docker-compose down
+        ;;
+      php)
+        shift 1
+        docker-compose exec -u $WWWUSER $APP_SERVICE php "$@"
+        ;;
+      composer)
+        shift 1
+        docker-compose exec -u $WWWUSER $APP_SERVICE composer "$@"
+        ;;
+      artisan|art)
+        shift 1
+        docker-compose exec -u $WWWUSER $APP_SERVICE php artisan "$@"
+        ;;
+      test)
+        shift 1
+        docker-compose exec -u $WWWUSER $APP_SERVICE php artisan test "$@"
+        ;;
+      tinker)
+        shift 1
+        docker-compose exec -u $WWWUSER $APP_SERVICE php artisan tinker
+        ;;
+      mysql)
+        shift 1
+        docker-compose exec mysql_db bash -c 'MYSQL_PWD=${DB_PASSWORD} mysql -u ${DB_USERNAME} ${DB_DATABASE}'
+        ;;
+      bash|shell)
+        shift 1
+        docker-compose exec -u $WWWUSER laravel bash "$@"
+        ;;
+      help)
+        echo "${WHITE}"
+        echo "./dev up -d                Starts the containers for the application"
+        echo "./dev down                 Stops the containers for the application"
+        echo "./dev php <args>           Runs the php command on the app container"
+        echo "./dev composer <args>      Runs the composer command on the app container"
+        echo "./dev artisan <args>       Runs the php artisan command on the app container"
+        echo "./dev test <args>          Runs the phpunit command on the app container"
+        echo "./dev tinker               Runs the php artisan tinker command on the app container"
+        echo "./dev mysql                Connects to the mysql container"
+        echo "./dev bash                 Opens a bash shell in the app container"
+        echo "${NC}"
+        ;;
+      logs)
+        docker-compose logs mysql_db
+        ;;
+      *)
+        echo "Usage: $0 {up|down|logs}"
+        exit 1
+    esac
+else
+    docker-compose ps
+fi
